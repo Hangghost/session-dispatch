@@ -1,0 +1,22 @@
+[project]
+name = "session-dispatch"
+version = "0.1.0"
+description = "Dispatch a round of downstream tasks to independent agent sessions, then converge them back."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["session_dispatch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

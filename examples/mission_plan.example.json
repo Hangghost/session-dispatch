@@ -1,0 +1,58 @@
+{
+  "_comment": "Mission plan 範例。實際檔案落於 <main-checkout>/.claude/missions/<mission-id>.json（machine-local、不進 git、只由指揮站寫）。欄位語意見 session_dispatch/mission_plan.py 的 dataclass docstring。注意三個節點形態差異：`audit`/`fix` 是一般 session 節點；`survey` 是 subagent（沒有 done_signal 與 base_ref——那兩條的前提不存在，完成判定取 plan status——但仍有派工單）；`land` 需獨佔主 checkout（ready_nodes() 每輪至多放行一個這類節點）。節點物件本身不得含額外欄位，否則 read_mission() 會拒收整份 plan。",
+
+  "mission_id": "2026-08-15-inbox-sink-cleanup",
+  "created_at": "2026-08-15T14:20:00+08:00",
+  "report_path": "",
+
+  "nodes": [
+    {
+      "id": "audit",
+      "session_name": "2026-08-15-inbox-sink-cleanup-audit",
+      "brief_path": "/Users/me/repo/.claude/missions/2026-08-15-inbox-sink-cleanup/audit.brief.md",
+      "done_signal": "test -f /Users/me/repo/.claude/worktrees/2026-08-15-inbox-sink-cleanup-audit/audit.result.md",
+      "base_ref": "main",
+      "model": "sonnet",
+      "depends_on": [],
+      "needs_exclusive_checkout": false,
+      "status": "pending",
+      "shape": "session"
+    },
+    {
+      "id": "fix",
+      "session_name": "2026-08-15-inbox-sink-cleanup-fix",
+      "brief_path": "/Users/me/repo/.claude/missions/2026-08-15-inbox-sink-cleanup/fix.brief.md",
+      "done_signal": "git log --oneline worktree-2026-08-15-inbox-sink-cleanup-fix | grep -q 'fix(inbox)'",
+      "base_ref": "main",
+      "model": "sonnet",
+      "depends_on": ["audit"],
+      "needs_exclusive_checkout": false,
+      "status": "pending",
+      "shape": "session"
+    },
+    {
+      "id": "survey",
+      "session_name": "2026-08-15-inbox-sink-cleanup-survey",
+      "brief_path": "/Users/me/repo/.claude/missions/2026-08-15-inbox-sink-cleanup/survey.brief.md",
+      "done_signal": "",
+      "base_ref": "",
+      "model": "",
+      "depends_on": [],
+      "needs_exclusive_checkout": false,
+      "status": "pending",
+      "shape": "subagent"
+    },
+    {
+      "id": "land",
+      "session_name": "2026-08-15-inbox-sink-cleanup-land",
+      "brief_path": "/Users/me/repo/.claude/missions/2026-08-15-inbox-sink-cleanup/land.brief.md",
+      "done_signal": "git log --oneline main | grep -q 'fix(inbox)'",
+      "base_ref": "main",
+      "model": "sonnet",
+      "depends_on": ["fix"],
+      "needs_exclusive_checkout": true,
+      "status": "pending",
+      "shape": "session"
+    }
+  ]
+}
