@@ -174,12 +174,17 @@ under `BREAKING:`, with the old and new call shapes.
 Pin a version rather than tracking `main`:
 
 ```bash
+git tag -n1               # list versions, newest last
+
 # skill (symlink install) — check out the tag in your clone
-git checkout v0.2.0
+git checkout v<VERSION>
 
 # Python package
-pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v0.2.0"
+pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v<VERSION>"
 ```
+
+(The examples do not hard-code a version on purpose — a pinned number in a README is one
+more hand-maintained copy of a fact that changes every release, and it goes stale silently.)
 
 There is no `CHANGELOG.md` on purpose: the annotated tag message *is* the release note,
 so there is only one copy to keep honest.

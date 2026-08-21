@@ -45,6 +45,8 @@ git checkout -b release/vX.Y.Z main
 #    - session_dispatch/__init__.py 的 __version__
 
 # 3. 若測試數／requirement 數有變，更新 README.md 與 README.zh-TW.md 內的數字
+#    （兩份 README 的釘版本範例**刻意不寫死版號**，用 `v<VERSION>` 佔位——
+#     那會是又一份每次發布都要改、過期時不出聲的手抄本。SHALL NOT 補回具體版號。）
 
 # 4. 跑測試
 pytest
