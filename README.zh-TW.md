@@ -139,12 +139,17 @@ pytest                    # 包含 68 個測試案例
 建議釘版本，不要跟著 `main` 走：
 
 ```bash
+git tag -n1               # 列出所有版本，最新的在最後
+
 # skill（symlink 安裝）——在你的 clone 內切到該 tag
-git checkout v0.2.0
+git checkout v<VERSION>
 
 # Python 套件
-pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v0.2.0"
+pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v<VERSION>"
 ```
+
+（範例刻意不寫死版號：README 裡的一個具體版號是**又一份**每次發布都會變的手抄本，
+而它過期時不會有任何訊號。）
 
 **本專案刻意不維護 `CHANGELOG.md`**：annotated tag 的訊息就是發布記錄本體，只有一份
 需要維持誠實。三份手維護的同一事實會各自漂移。
