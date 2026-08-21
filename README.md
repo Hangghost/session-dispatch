@@ -162,8 +162,34 @@ The Python primitives are dependency-free, standard library only:
 
 ```bash
 pip install -e .          # or just copy session_dispatch/ into your project
-pytest                    # 64 tests
+pytest                    # 68 tests
 ```
+
+### Versioning
+
+Releases are annotated git tags, `vMAJOR.MINOR.PATCH`, on `main`. While this is `0.x`,
+**a minor bump may carry breaking changes** — those are called out in the tag message
+under `BREAKING:`, with the old and new call shapes.
+
+Pin a version rather than tracking `main`:
+
+```bash
+# skill (symlink install) — check out the tag in your clone
+git checkout v0.2.0
+
+# Python package
+pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v0.2.0"
+```
+
+There is no `CHANGELOG.md` on purpose: the annotated tag message *is* the release note,
+so there is only one copy to keep honest.
+
+```bash
+git tag -n99              # every version with its full notes
+git log v0.1.0..v0.2.0    # what changed between two versions
+```
+
+Maintainers: the release procedure lives in [`RELEASING.md`](RELEASING.md).
 
 ## Where mission files live
 
@@ -216,6 +242,7 @@ being the same head*, which has nothing to do with running at the same time.
 | `references/incidents.md` | Where each clause came from — the real run that produced it |
 | `references/decisions.md` | Alternatives that were considered and rejected, with reasons |
 | `examples/mission_plan.example.json` | Plan file shape |
+| `RELEASING.md` | Release convention — tag format, 0.x semantics, and which half of it is machine-enforced |
 
 `SPEC.md` is the half that's harder to copy: it turns "why you can't trust a worker's
 claim that it's done" into auditable clauses instead of prose advice.

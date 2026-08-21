@@ -127,8 +127,34 @@ Python 底層邏輯零外部套件依賴，完全使用標準函式庫：
 
 ```bash
 pip install -e .          # 或直接將 session_dispatch/ 目錄複製進你的專案中
-pytest                    # 包含 64 個測試案例
+pytest                    # 包含 68 個測試案例
 ```
+
+### 版號與發布
+
+發布以 annotated git tag 標記，格式 `vMAJOR.MINOR.PATCH`，只打在 `main` 上。目前仍在
+`0.x`，**minor 進位可能帶 breaking change**——那類變更會在 tag 訊息中以 `BREAKING:`
+開頭的行載明，並寫出舊呼叫與新呼叫的形狀。
+
+建議釘版本，不要跟著 `main` 走：
+
+```bash
+# skill（symlink 安裝）——在你的 clone 內切到該 tag
+git checkout v0.2.0
+
+# Python 套件
+pip install "session-dispatch @ git+https://github.com/Hangghost/session-dispatch@v0.2.0"
+```
+
+**本專案刻意不維護 `CHANGELOG.md`**：annotated tag 的訊息就是發布記錄本體，只有一份
+需要維持誠實。三份手維護的同一事實會各自漂移。
+
+```bash
+git tag -n99              # 列出所有版本與完整訊息
+git log v0.1.0..v0.2.0    # 兩版之間的變更
+```
+
+維護者：發布流程見 [`RELEASING.md`](RELEASING.md)。
 
 ## Mission 檔案的存放位置
 
@@ -168,6 +194,7 @@ pytest                    # 包含 64 個測試案例
 | `references/incidents.md` | 每條規約的實測來源——當時發生什麼、為什麼那條擋得住 |
 | `references/decisions.md` | 被正面否決的替代方案與理由 |
 | `examples/mission_plan.example.json` | Mission plan 的 JSON 格式範例 |
+| `RELEASING.md` | 發布慣例——tag 格式、0.x 版號語意，以及其中哪一半由測試強制 |
 
 `SPEC.md` 是這套工具中最難被複製的核心價值：它把「為什麼不能輕信 Worker 說自己做完了」轉化為可被稽核的具體條文，而不是一段模糊的文字建議。
 
