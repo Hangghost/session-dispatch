@@ -107,6 +107,45 @@ overturned defaults were all overturned by subagents.
 The default is `session`: a missing field gets you the full set of constraints, not
 an exemption.
 
+## Dispatching into another repository
+
+A worker's workspace can be a **different git repository** — this repo acts as the
+dispatcher while the worker runs some other repo's own workflow. Three things change:
+
+- **The completion signal is evaluated per node**, anchored at `MissionNode.workspace_repo`,
+  not at one mission-wide cwd. A git signal run against the wrong repo exits non-zero and
+  gets read as "still working" — so an unreachable workspace returns `unavailable`, never
+  `pending`.
+- **Isolation must be arranged explicitly.** Background sessions are *not* auto-isolated,
+  in either repo. Either launch with a container flag, or make entering one the worker's
+  first instruction.
+- **The plan and the brief stay with the dispatcher**, read by the worker through an
+  explicit directory grant. Cross-repo signals must be commit-shaped: you cannot predict
+  the container name the other repo's workflow will pick.
+
+`dispatch_plan(node, mission_id)` returns those facts — launch cwd, directory grants,
+brief path, who creates the container — without opening a session or creating anything.
+
+## Cleaning up worker containers
+
+A worker's worktree is not reclaimed when its session stops. Cleanup is refused on two
+conditions: uncommitted changes, and **commits never pushed anywhere** — the second is
+structurally guaranteed under a squash workflow, since the content reached the mainline
+but those SHAs never did.
+
+`plan_worker_teardown(node)` reports, per node, one of `disposed` / `pending` /
+`unavailable`, plus the container path, dirty files, sessions still sitting inside it, and
+an ordered `steps` list. It is plan-only — it tears down nothing.
+
+The three-state split matters: `disposed` is a positive assertion ("I enumerated the
+target repo against a trustworthy anchor and nothing belongs to this node"). Without an
+anchor the enumeration comes back empty *the same way*, so that case returns `unavailable`
+— reporting `disposed` there would be passing off "I didn't find it" as "it isn't there".
+
+Steps never include branch deletion. Branch policy belongs to the target repo's workflow,
+and judging a foreign branch by this repo's conventions doesn't error — it just gets it
+wrong.
+
 ## Install
 
 The skill itself is `SKILL.md`; installation depends on your agent:
@@ -123,7 +162,7 @@ The Python primitives are dependency-free, standard library only:
 
 ```bash
 pip install -e .          # or just copy session_dispatch/ into your project
-pytest                    # 45 tests
+pytest                    # 64 tests
 ```
 
 ## Where mission files live
@@ -171,8 +210,11 @@ being the same head*, which has nothing to do with running at the same time.
 | File | Contents |
 |---|---|
 | `SKILL.md` | The full workflow: planning, briefs, dispatch, star topology, degradation, convergence, and an anti-rationalization table |
-| `SPEC.md` | 15 normative clauses (SHALL / SHALL NOT), each with testable scenarios |
+| `SPEC.md` | 25 normative clauses (SHALL / SHALL NOT), each with testable scenarios |
 | `references/brief.template.md` | The brief template — canonical, pinned by a test that feeds it verbatim to the linter |
+| `references/cross-repo.md` | Playbook for dispatching a worker into a *different* repository |
+| `references/incidents.md` | Where each clause came from — the real run that produced it |
+| `references/decisions.md` | Alternatives that were considered and rejected, with reasons |
 | `examples/mission_plan.example.json` | Plan file shape |
 
 `SPEC.md` is the half that's harder to copy: it turns "why you can't trust a worker's

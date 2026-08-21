@@ -8,3 +8,6 @@ dist/
 
 # mission 檔是 machine-local 的過程產物
 .claude/missions/
+
+# uv 產生的 lock（本專案是 library，不釘 lock）
+uv.lock

@@ -4,8 +4,14 @@ English summary: enumerates live Claude Code sessions via `claude agents --json`
 so the dispatcher can check a planned session name is not already taken. Read-only,
 never raises, and degrades explicitly when the CLI is unavailable.
 
-本 module 只做一件事:回答「這個名字有人用了嗎」。它**不做**持有關係比對、不做 worktree
-join——那些是 repo 特有的協調需求,不屬於本工作流的核心。
+本 module 回答兩個關於 live session 的問題:**「這個名字有人用了嗎」**(撞名檢查,
+dispatch 前)與**「誰還坐在這個容器裡」**(持有關係,收尾時)。兩者共用同一份枚舉,
+故住同一個 module。
+
+> 早期版本的 docstring 寫著本 module「不做持有關係比對——那是 repo 特有的協調需求」。
+> `plan_worker_teardown()` 落地後那句話不再成立:收尾必須知道容器裡還有沒有人,否則
+> `worktree remove` 會在一個仍被佔用的目錄上失敗。**能力聲明與實際能力脫鉤,比沒有
+> 聲明更糟**——它讓讀者以為自己已經知道邊界在哪,因而不去讀程式碼。
 
 ## 兩條設計約束
 
@@ -206,6 +212,91 @@ def name_is_taken(name: str, roster: Optional[SessionRoster] = None) -> bool:
     if not r.available:
         return False
     return name in taken_names(r)
+
+
+def self_session_id() -> Optional[str]:
+    """當前 agent session 自己的短 id，取自 ``$CLAUDE_JOB_DIR`` basename；取不到回 ``None``。
+
+    存在理由:跑檢查的 session 自己也在 roster 裡。不排除自身,收尾時會把「我正站在這個
+    容器裡」報成「有別人佔著」,於是一個本來可以拆的容器永遠顯示被阻塞。
+    """
+    job_dir = os.environ.get("CLAUDE_JOB_DIR", "").strip()
+    if not job_dir:
+        return None
+    name = Path(job_dir).name
+    return name or None
+
+
+def _is_under(child: str | Path, parent: str | Path) -> bool:
+    """`child` 是否落在 `parent` 子樹內（含相等）。路徑無法 resolve 時回 ``False``。"""
+    try:
+        return Path(child).resolve().is_relative_to(Path(parent).resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def sessions_holding(
+    worktree_path: str | Path,
+    roster: Optional[SessionRoster] = None,
+    repo: Optional[Path] = None,
+    exclude_self: bool = True,
+) -> list[LiveSession]:
+    """「持有」指定容器路徑的 live session——持有＝session 的 `cwd` 落在該子樹內。
+
+    收尾流程用它回答「這個容器現在能不能拆」。`worktree remove` 對仍被佔用的目錄會
+    失敗,而失敗訊息不會告訴你是誰佔著。
+
+    **只吃已解析的路徑,不吃分支名。** 分支 → 路徑的反查需要目標 repo 的 git 狀態,
+    那個知識住 `mission_plan.plan_worker_teardown()`(它才知道該問哪個 repo)。本函式
+    留在「roster 上的集合運算」這一層。
+
+    目標為某個 repo 的**主 checkout** 時,額外排除 `.claude/worktrees/` 子樹——否則每
+    個 worktree session 的 cwd 都落在主 checkout 之下,會被全數算成主 checkout 的持有
+    者。該判定需要知道容器目錄長在哪,故 `repo` 有值時才啟用。
+
+    **roster 不可用時回空清單**,與 `name_is_taken()` 同一 fail-soft 契約。呼叫方若要
+    區分「查得到且沒人」與「查不到」,SHALL 自行檢查 ``roster.available``——空清單在
+    unavailable 情境下不代表「無持有者」。
+
+    ``roster`` 參數是同一步驟內共用一次枚舉的最佳化,**SHALL NOT 跨決策點沿用**:
+    session 的 cwd 會在中途無聲改變,舊 roster 即過期事實。
+    """
+    if roster is None:
+        roster = enumerate_live_sessions()
+    if not roster.available:
+        return []
+
+    target = Path(worktree_path)
+    worktree_container: Optional[Path] = None
+    is_main_checkout = False
+    if repo is not None:
+        # lazy import：避免與 mission_plan 形成 module 層循環（那一邊也以 lazy import
+        # 取用本 module）。此處只借一個純 git 路徑解析,不引入其他耦合。
+        from session_dispatch.mission_plan import (  # noqa: PLC0415 - 見上
+            main_checkout_root,
+        )
+
+        main_root = main_checkout_root(repo)
+        is_main_checkout = _is_under(target, main_root) and _is_under(main_root, target)
+        worktree_container = main_root / ".claude" / "worktrees"
+
+    me = self_session_id() if exclude_self else None
+    holders: list[LiveSession] = []
+    for session in roster.sessions:
+        if me and session.session_id == me:
+            continue
+        if not _is_under(session.cwd, target):
+            continue
+        if is_main_checkout and worktree_container is not None:
+            if _is_under(session.cwd, worktree_container):
+                continue  # worktree session 不算主 checkout 的持有者
+        holders.append(session)
+    return holders
+
+
+def describe_holders(sessions: list[LiveSession]) -> str:
+    """多個持有者的多行呈現（每行前綴 `  · `）。空清單回空字串。"""
+    return "\n".join(f"  · {s.describe()}" for s in sessions)
 
 
 def coverage_note(roster: SessionRoster) -> str:
