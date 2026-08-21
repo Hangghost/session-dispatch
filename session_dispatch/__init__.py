@@ -2,15 +2,18 @@
 
 公開介面刻意窄：規劃與收斂的判斷留給人（或指揮站 agent），本套件只提供
 deterministic 的那一半——plan 讀寫、完成訊號三態求值、ready 計算、派工單 lint、
-撞名檢查。
+撞名檢查、dispatch 事實推導、以及 worker 容器的收尾狀態判定。
 """
 
 from session_dispatch.live_sessions import (
     LiveSession,
     SessionRoster,
     coverage_note,
+    describe_holders,
     enumerate_live_sessions,
     name_is_taken,
+    self_session_id,
+    sessions_holding,
     taken_names,
 )
 from session_dispatch.mission_plan import (
@@ -18,16 +21,21 @@ from session_dispatch.mission_plan import (
     NODE_SHAPES,
     NODE_STATUSES,
     SIGNAL_STATES,
+    TEARDOWN_STATES,
+    DispatchPlan,
     Mission,
     MissionNode,
     SignalOutcome,
+    WorkerTeardownPlan,
     brief_path,
+    dispatch_plan,
     evaluate_all,
     evaluate_signal,
     lint_brief,
     main_checkout_root,
     mission_home,
     mission_path,
+    plan_worker_teardown,
     read_mission,
     ready_nodes,
     set_node_status,
@@ -39,16 +47,21 @@ from session_dispatch.mission_plan import (
 
 __all__ = [
     "HOME_ENV_VAR",
+    "DispatchPlan",
     "LiveSession",
     "Mission",
     "MissionNode",
     "NODE_SHAPES",
     "NODE_STATUSES",
     "SIGNAL_STATES",
+    "TEARDOWN_STATES",
     "SessionRoster",
     "SignalOutcome",
+    "WorkerTeardownPlan",
     "brief_path",
     "coverage_note",
+    "describe_holders",
+    "dispatch_plan",
     "enumerate_live_sessions",
     "evaluate_all",
     "evaluate_signal",
@@ -57,8 +70,11 @@ __all__ = [
     "mission_home",
     "mission_path",
     "name_is_taken",
+    "plan_worker_teardown",
     "read_mission",
     "ready_nodes",
+    "self_session_id",
+    "sessions_holding",
     "set_node_status",
     "taken_names",
     "unavailable_signals",
@@ -67,4 +83,4 @@ __all__ = [
     "write_mission",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

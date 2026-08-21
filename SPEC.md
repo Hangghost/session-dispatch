@@ -158,12 +158,40 @@ OSError）SHALL 回 `unavailable` 並附原因，SHALL NOT 併入 `pending`。
 ——**worker 自己的 worktree**，或**其分支上的 commit**。SHALL NOT 要求 worker 寫入 mission
 目錄。
 
-理由是 worker 同樣受 worktree 隔離約束，對自身 worktree 之外的寫入會被擋下；被要求寫入
-mission 目錄的 worker 會改寫到自己 worktree 內的同名相對路徑，於是回報「完成」而完成訊號
-永不 fire。此限制同時**免費強制了「plan 只由指揮站寫」**這條不變式，故 SHALL NOT 試圖繞過。
+理由是 worker 受 worktree 隔離約束，其**檔案編輯工具**對自身 worktree 之外的寫入會被 guard
+擋下；被要求寫入 mission 目錄的 worker 會改寫到自己 worktree 內的同名相對路徑，於是回報
+「完成」而完成訊號永不 fire。
+
+**此限制 SHALL NOT 被描述為「免費強制了『plan 只由指揮站寫』」，亦 SHALL NOT 被描述為多層
+防護的疊加。** 實測矩陣顯示實況是**兩道 guard ＋ 三條完全無防護的路**：
+
+| | 路徑 | 結果 |
+|---|---|---|
+| 擋 | 檔案編輯工具寫入所在 repo 的 shared checkout | 拒絕（訊息誘導 worker 改寫自己 worktree 內的同名路徑） |
+| 擋 | shell 的 `git -C <自己 worktree 之外>`，以及無法靜態證明留在 worktree 內的複合命令 | 拒絕。**兩者都只在 git 或命令形狀上發作，對單純檔案寫入一次都沒有發作** |
+| 不擋 | shell 直接檔案寫入 shared checkout | 穿透。**寫入量不是判準**——500 行寫入與複合寫入皆穿透 |
+| 不擋 | Python process 寫入 | 穿透。寫派工單／寫 plan 的原語正是靠這個縫 |
+| 不擋 | POSIX 檔案權限 | worker 與指揮站是同一個 OS user，mission 目錄可寫 |
+
+據此，呈現層與文件 SHALL 以下列語意描述此不變式，SHALL NOT 以「免費強制」或「多層疊加」描述：
+
+> 檔案編輯工具會拒絕越界寫入，shell 與 Python 不會。因此「plan 只由指揮站寫」是一條**慣例**，
+> 其強度取決於 worker 選了哪個工具——**而偏好 shell 的執行模式正把 worker 推向那一側**。要讓
+> 它成為不變式，需要工具層以外的機制。
+
+理由是**一條寫在文件裡、比實際強的安全保證，會讓讀者據此決定不必再加防護**——宣稱與實際脫鉤
+時，沉默被讀成保證。「多層疊加」是同一個錯誤的第二個版本：它把兩道只在特定命令形狀上發作的
+guard 講成縱深防禦，讀者仍會高估其強度。
+
+本 requirement 前段所述的「worker 改寫到自己 worktree 內的同名相對路徑」SHALL 被理解為**條件
+成立**：該轉向由編輯工具的拒絕訊息誘導，只在 worker 選了它時發生。選 shell 的 worker 得不到
+任何訊息而**靜默寫穿**——兩條路徑的失效方向相反（前者訊號永不 fire，後者訊號 fire 但不變式
+已破），呈現層 SHALL NOT 只描述其中一條。
 
 產物需活過 worker worktree 清理時，`done_signal` SHALL 採 commit 形態；一次性回報可落
-worktree 內檔案，此時指揮站 SHALL 在收尾清理前把要保留的內容讀走。
+worktree 內檔案，此時指揮站 SHALL 在收尾清理前把要保留的內容讀走。**worktree 內檔案形態僅
+適用於指揮站自己建立並命名容器的節點**；容器由 worker 自行建立時（典型為跨 repo 節點）SHALL
+採 commit 形態。
 
 #### Scenario: 派工單要求 worker 寫入 mission 目錄
 
@@ -174,6 +202,18 @@ worktree 內檔案，此時指揮站 SHALL 在收尾清理前把要保留的內�
 
 - **WHEN** 某節點的產出需要在 mission 收尾後仍可取得
 - **THEN** 其 `done_signal` SHALL 採 commit 形態，SHALL NOT 只落 worktree 內檔案
+
+#### Scenario: 文件描述此限制的強制力
+
+- **WHEN** skill 或呈現層要說明「worker 寫不進 mission 目錄」帶來的保證
+- **THEN** SHALL 載明其為慣例而非不變式、強度取決於 worker 選了哪個工具，SHALL NOT 描述為
+  免費強制，亦 SHALL NOT 描述為多層防護的疊加
+
+#### Scenario: worker 以 shell 寫入 mission 目錄
+
+- **WHEN** 某 worker 未使用檔案編輯工具，改以 shell 直接寫入 mission 目錄
+- **THEN** 該寫入 SHALL 被理解為會成功，文件 SHALL NOT 宣稱此路徑受阻——其失效方向與「訊號
+  永不 fire」相反，是不變式被破而訊號照常 fire
 
 ### Requirement: 協調拓樸 SHALL 為 star，worker 間訊息 SHALL 僅含節點指針
 
@@ -338,10 +378,35 @@ mission 收尾 SHALL 對每個 worker worktree 給出明確處置（提交／捨
 變更，清理指令會拒絕執行並保留該 worktree。完成訊號與產物落地是兩件事——訊號說工作做完了，
 未 commit 變更說產物還沒落地。
 
+清理被拒絕還有**第二種**條件：分支上有從未 push 過的 commit。該條件在 squash 流程下結構上
+必然發生——內容早已進主線，只是那些 SHA 沒被 push 過。
+
+本義務 SHALL 同等適用於跨 repo 節點（宣告了 workspace repo 者）。跨 repo 下容器位於目標 repo
+內、且容器名不在指揮站的控制內，但**義務不因取得難度而降級**：處置狀態 SHALL 由 plan-only
+原語自節點推導，SHALL NOT 只以散文要求執行者自行記得。
+
+處置狀態 SHALL 為三態——`disposed`（以可信錨點枚舉過目標 repo，無容器屬於本節點）／`pending`
+（容器仍在，待處置）／`unavailable`（無法判定：目標 repo 不可達、git 不可用、或**缺可信定位
+錨點**）。判準是「有沒有可信錨點」而非「有沒有找到」——缺錨點時枚舉同樣全部落空，外觀與已處置
+完全相同。`unavailable` SHALL NOT 被併入其他任一態：把「查不到」渲染成「已處置」是靜默降級，
+渲染成「待處置」則會讓一個壞掉的收尾長得跟一個還沒做的收尾一樣。
+
 #### Scenario: worker worktree 留有未 commit 變更
 
 - **WHEN** mission 收尾時某 worker 的 worktree 仍有未 commit 變更
 - **THEN** 收斂流程 SHALL 呈現該事實並要求處置決定，SHALL NOT 靜默略過或宣稱已清理
+
+#### Scenario: 跨 repo 節點的容器處置
+
+- **WHEN** mission 收尾時某節點宣告了 workspace repo
+- **THEN** 其容器處置狀態 SHALL 由 plan-only 原語推導並呈現，SHALL NOT 因「容器在別的 repo」
+  而豁免處置義務
+
+#### Scenario: 缺可信定位錨點
+
+- **WHEN** 收尾時某跨 repo 節點未宣告指揮站指定的工作分支，或其目標 repo 不可達
+- **THEN** 該節點的處置狀態 SHALL 為 `unavailable` 並附原因，SHALL NOT 回一條推測的容器路徑，
+  亦 SHALL NOT 記為已處置——枚舉全部落空在「已拆掉」與「找錯地方」兩種情形下外觀完全相同
 
 ### Requirement: 無 messaging 環境下的行為 SHALL 與導入前逐字一致
 
@@ -368,14 +433,23 @@ messaging 時相同，差別 SHALL 僅在延遲。
 
 ### Requirement: 需獨佔主 checkout 的節點 SHALL 被標記且不並排
 
-節點若需在主 checkout 獨佔執行（典型為跨分支 merge、需要全 repo 視角的清理），SHALL 於 plan
-中標記。指揮站 SHALL NOT 同時派出兩個此類節點，且該類節點的派工單 SHALL 說明可能撞上誰與
-對應的等待協定。
+節點若需在其 workspace repo 的主 checkout 獨佔執行（典型為跨分支 merge、需要全 repo 視角的
+清理），SHALL 於 plan 中標記。指揮站 SHALL NOT 同時派出兩個**workspace repo 相同**的此類
+節點，且該類節點的派工單 SHALL 說明可能撞上誰與對應的等待協定。
+
+此標記的語意 SHALL 為「需要**其 workspace repo 的**主 checkout」。不同 repo 的主 checkout 是
+彼此獨立的資源，其鎖不互相排斥；把此標記解讀為全域單一資源會讓跨 repo 的節點被無謂地循序化。
 
 #### Scenario: 兩個節點皆需獨佔主 checkout
 
-- **WHEN** mission 含兩個標記為需獨佔主 checkout 的節點
+- **WHEN** mission 含兩個標記為需獨佔主 checkout 且 **workspace repo 相同**的節點
 - **THEN** 指揮站 SHALL 使其循序執行，SHALL NOT 同時派出
+
+#### Scenario: 兩個節點需不同 repo 的主 checkout
+
+- **WHEN** mission 含兩個標記為需獨佔主 checkout 的節點，且兩者的 workspace repo 不同
+- **THEN** 兩者 SHALL 可同時派出——它們爭用的是不同 repo 的資源，SHALL NOT 因共用同一個標記
+  欄位而被循序化
 
 ### Requirement: Mission 結束 SHALL 產出合成報告
 
@@ -431,3 +505,274 @@ skill SHALL 額外記載兩項專屬判準與決策：**(a)** 派工前先評估
 
 - **WHEN** 使用者把本 skill 安裝到自己的 repo
 - **THEN** skill 內的判準 SHALL 完整可讀，SHALL NOT 依賴任何本 repo 以外的文件
+
+### Requirement: 節點 SHALL 宣告其 workspace repo，跨 repo 節點 SHALL 以絕對路徑表示
+
+每個節點 SHALL 可宣告 worker 的 workspace 所在 git repository。未宣告（空值）SHALL 解讀為
+**指揮站自身的 repo**——預設落在既有語意上，使導入前寫成的 plan 行為逐字不變。
+
+宣告為非空時 SHALL 為**絕對路徑**，且 SHALL 於節點建構時就被拒絕若非絕對路徑。理由是相對
+路徑的解析基準是 process cwd，而 cwd 在 long-running agent session 中會跨 tool call 改變；
+一個相對的 workspace 宣告會在不同時刻指向不同 repo，而三者外觀相同。
+
+路徑**存在與否 SHALL NOT 於建構期驗證**，SHALL 留待訊號求值時以顯式的不可用狀態回報。理由是
+兩者是不同性質的錯誤：非絕對路徑是 plan 寫壞了（指揮站的 bug，該立刻炸），路徑消失是環境變了
+（該被看見，但不該讓整份 plan 讀不進來）。
+
+`base_ref` 對跨 repo 節點 SHALL 解讀為**其 workspace repo 內的 ref**，SHALL NOT 解讀為指揮站
+repo 的 ref。
+
+#### Scenario: 既有 plan 未宣告 workspace repo
+
+- **WHEN** 讀入一份導入本條文之前寫成的 plan，其節點皆無 workspace repo 欄位
+- **THEN** 每個節點 SHALL 被視為工作於指揮站自身的 repo，行為 SHALL 與導入前逐字相同
+
+#### Scenario: 節點以相對路徑宣告 workspace repo
+
+- **WHEN** 某節點的 workspace repo 宣告為 `../other-repo` 這類相對路徑
+- **THEN** SHALL 於建構期拒絕並指名該欄位與理由，SHALL NOT 於稍後以 cwd 解析
+
+#### Scenario: 跨 repo 節點的 base ref
+
+- **WHEN** 某節點宣告 workspace repo 為目標 repo，`base_ref` 為 `main`
+- **THEN** 該 `base_ref` SHALL 指目標 repo 的 `main`，派工單 SHALL 指示 worker 於目標 repo
+  內從該 base 開分支
+
+### Requirement: 完成訊號 SHALL 於節點自己的 workspace repo 內求值
+
+`done_signal` 的求值 SHALL 以節點的 workspace repo 作為工作目錄；節點未宣告時方沿用呼叫方
+提供的目錄。SHALL NOT 對一份含跨 repo 節點的 plan 以單一工作目錄求值全部節點。
+
+節點宣告的 workspace repo **不存在、不是目錄、或不是 git repository 時**，該節點的求值結果
+SHALL 為 `unavailable` 並附原因，SHALL NOT 為 `pending`。
+
+理由是最常見的跨 repo 訊號形態是 `git log --oneline <branch> | grep -q <marker>`：在錯誤的
+repo 內求值時 git 吐出 usage 錯誤並回非零，於是被歸類為「還沒做完」。**一個永遠不會 fire 的
+訊號因此長得跟一個還在工作的 worker 一模一樣**，指揮站會永遠等下去。求值錨點錯誤是能力故障，
+不是進度狀態。
+
+此外，退出碼明確表示「指令跑不起來」時（找不到指令、不可執行）SHALL 歸 `unavailable`。此條
+**SHALL NOT 被理解為關閉了一般性缺口**：一條跑起來但因參數錯誤回退出碼 1 的指令，與「檢查為
+否」在回傳值上仍完全同形，而區分兩者需要對每條訊號的語意有知識，超出本能力的範圍。文件 SHALL
+明示此射程，SHALL NOT 讓讀者以為三態求值已能辨識所有壞掉的訊號——**那會是本 requirement 自己
+製造的第二個過強宣稱**。
+
+#### Scenario: 跨 repo 節點的訊號在正確的 repo 內求值
+
+- **WHEN** 某節點宣告 workspace repo 為目標 repo，其 `done_signal` 檢查該 repo 某分支上的
+  commit marker
+- **THEN** 求值 SHALL 於該 repo 內執行，SHALL NOT 於指揮站 repo 內執行
+
+#### Scenario: 同一份 plan 混有本 repo 與跨 repo 節點
+
+- **WHEN** 一份 plan 同時含未宣告 workspace repo 的節點與宣告了目標 repo 的節點
+- **THEN** 每個節點 SHALL 各自於其對應的目錄求值，SHALL NOT 因共用一次求值呼叫而共用同一個
+  工作目錄
+
+#### Scenario: 宣告的 workspace repo 不可達
+
+- **WHEN** 某節點宣告的 workspace repo 路徑不存在，或存在但不是 git repository
+- **THEN** 該節點的求值結果 SHALL 為 `unavailable` 並載明原因，SHALL NOT 併入 `pending`
+
+#### Scenario: 訊號指令根本不存在
+
+- **WHEN** 某節點的 `done_signal` 指向一個不存在於 PATH 的指令
+- **THEN** 求值結果 SHALL 為 `unavailable`，SHALL NOT 為 `pending`
+
+#### Scenario: 訊號指令跑起來但參數寫錯
+
+- **WHEN** 某節點的 `done_signal` 指令存在、跑得起來，但因參數錯誤回非零退出碼
+- **THEN** 求值結果 MAY 為 `pending`——本能力 SHALL NOT 宣稱能辨識此形態，文件 SHALL 明示
+  此射程
+
+### Requirement: 跨 repo 節點的完成訊號 SHALL 為 git artifact 形態
+
+宣告了 workspace repo 的節點，其 `done_signal` SHALL 指向**指揮站指定的分支上的 commit**
+（或其他可自 repo 根目錄求值的 git artifact），SHALL NOT 指向 worker worktree 內的檔案。
+
+理由是**worker 的容器名不在指揮站的控制內**。跨 repo 情境下 worker 通常執行目標 repo 自己的
+工作流，而該工作流會自行建立並命名容器；實測一個被命名為 `xrepo-smoke-probe` 的 session，
+自行隔離後容器叫 `xrepo-smoke`。指揮站據名稱推導出的路徑因此是猜的，而猜錯的後果是一個永遠
+pending 的節點。
+
+分支名同樣是 worker 的自治範圍，故指揮站 SHALL 於派工單的邊界段**顯式指定分支名**並將其納入
+完成訊號；worker SHALL NOT 自行改用他名。這與「邊界指涉並行節點時用檔案路徑＋節點 id 而非
+分支名」不衝突：後者管的是**指涉他人**，此處管的是**指揮站對受派者下達的命名**。
+
+#### Scenario: 跨 repo 節點以 worktree 內檔案作為完成訊號
+
+- **WHEN** 某跨 repo 節點的 `done_signal` 寫成 `test -f <推導的容器路徑>/<檔名>`
+- **THEN** 該節點 SHALL 被視為設計錯誤並改為 commit marker 形態，SHALL NOT 派工
+
+#### Scenario: 指揮站嘗試推導跨 repo worker 的容器路徑
+
+- **WHEN** 指揮站對一個宣告了 workspace repo 的節點請求其 worker 產物目錄
+- **THEN** SHALL 拒答並指出容器名由 worker 決定、應改用 commit 形態訊號，SHALL NOT 回傳一條
+  以 session 名稱推導的路徑
+
+### Requirement: 派工單與 plan SHALL 落於指揮站 repo，跨 repo worker SHALL 以顯式目錄授權讀取
+
+mission plan 檔與派工單 SHALL 落於**指揮站 repo** 的 machine-local 位置，SHALL NOT 因 worker
+在別的 repo 而改寫入該 repo。理由有二：其一，mission 目錄的路徑形狀是指揮站 repo 的架構約定，
+寫進他人 repo 是把自己的目錄慣例外溢到一個不認得它的版本庫；其二，plan 的單一寫入者不變式
+建立在「只有一份 plan」之上，依 worker 所在 repo 分散存放會讓同一次 dispatch 有多份作戰圖。
+
+跨 repo worker SHALL 於啟動時被顯式授予指揮站派工單目錄的讀取權（CLI 層的附加目錄授權），使
+派工單以絕對路徑可讀。指揮站 SHALL 於確認畫面呈現該授權，SHALL NOT 使其成為隱式副作用——該
+授權同時擴大了 worker 對指揮站 repo 的可及範圍。
+
+#### Scenario: 跨 repo 節點的派工單落點
+
+- **WHEN** 指揮站為一個 workspace 在目標 repo 的節點寫派工單
+- **THEN** 派工單 SHALL 落於指揮站 repo 的 mission 目錄，SHALL NOT 落於目標 repo
+
+#### Scenario: 跨 repo worker 讀不到派工單
+
+- **WHEN** 跨 repo worker 啟動時未被授予指揮站派工單目錄的讀取權
+- **THEN** 該節點 SHALL 被視為 dispatch 設定錯誤，SHALL NOT 以「把派工單內容塞進 seed
+  prompt」規避
+
+### Requirement: Dispatch 所需的 deterministic 事實 SHALL 由 plan-only 原語回答
+
+「要 dispatch 這個節點，指令該從哪個目錄下、要授權哪些附加目錄、派工單的絕對路徑是什麼、容器
+由誰建立」——這四件事 SHALL 由一個 plan-only 的原語自節點推導，SHALL NOT 只存在於 skill 的
+散文步驟裡。該原語 SHALL 純（只讀檔案系統與 plan 並計算），SHALL NOT 開啟 session、建立
+worktree 或寫入任何檔案。
+
+該原語 SHALL NOT 組裝 CLI 指令字串。CLI 旗標的形狀是外部工具的非正式契約，其 SSOT 為 skill；
+把它複製進本層會讓同一件事有兩個真相層，而兩者會各自演化。原語負責的是**repo 推導出來的
+事實**，渲染成指令由 skill 負責。
+
+存在理由是**沒有消費者的欄位會死**：workspace repo 若只被 plan 檔承載而 dispatch 這一步仍是
+散文，它會重蹈既有的形態——被宣告、被測試、沒有任何工作流真的讀它。
+
+#### Scenario: 跨 repo 節點的 dispatch 事實
+
+- **WHEN** 對一個宣告了 workspace repo 的節點請求其 dispatch 事實，且未指定容器名
+- **THEN** launch 目錄 SHALL 為該 workspace repo，附加目錄授權 SHALL 含指揮站的派工單目錄，
+  且 SHALL 標示容器由 worker 建立——此時派工單 SHALL 將進入容器寫為 worker 的第一個動作
+
+#### Scenario: 指揮站選擇自行指定跨 repo 節點的容器
+
+- **WHEN** 對一個跨 repo 節點請求 dispatch 事實並指定容器名
+- **THEN** SHALL 標示容器由指揮站建立並回傳該名稱，使「啟動時即指定容器」這條隔離安排路徑在
+  原語層可表達
+
+#### Scenario: 同 repo 節點的 dispatch 事實
+
+- **WHEN** 對一個未宣告 workspace repo 的節點請求其 dispatch 事實
+- **THEN** launch 目錄 SHALL 為指揮站 repo，附加目錄授權 SHALL 為空，且 SHALL 標示容器由指揮
+  站建立並以節點的 session 名稱命名
+
+#### Scenario: 原語不產生副作用
+
+- **WHEN** 呼叫該原語
+- **THEN** 檔案系統、git 狀態與 session roster SHALL 與呼叫前完全一致，SHALL NOT 有任何
+  session 被開啟或 worktree 被建立
+
+### Requirement: Worker 的隔離 SHALL 被顯式安排，SHALL NOT 被假設為自動發生
+
+每個 `session` 形態的節點，其 worker 的 worktree 隔離 SHALL 由下列兩者之一顯式安排：**啟動時
+即指定容器**，或**派工單將進入容器寫為 worker 的第一個動作**。指揮站 SHALL NOT 假設 worker
+會因 repo 的隔離設定而自動落在容器內。
+
+實測依據：背景 session **不會**被自動隔離，兩個 repo 皆然。指揮站自身（未指定容器啟動）第一次
+編輯檔案時得到的是一則要求先進入容器的 guard 訊息，而非一個已建好的容器；跨 repo worker 是
+同一形態。目標 repo 的隔離設定比指揮站 repo 更積極，卻同樣不自動隔離——**「目標 repo 的
+harness 比較不完善」這個推測方向是反的**。
+
+隔離是一個**被宣告過的 session 狀態**，不是工作目錄的性質：同一個 session 在進入容器前後，其
+環境判定由「未隔離」翻為「已隔離」，編輯 guard 隨之從拒絕翻為允許。
+
+指揮站 repo 之所以用起來像是自動的，是因為其工作流層會**顯式建立容器**。**目標 repo SHALL
+NOT 被假設有這一層。**
+
+未安排隔離的 worker 會落在目標 repo 的預設分支上未隔離，接著只有兩條路：以無 guard 的路徑寫
+進 shared checkout（見「Worker 產物落點」requirement 的實測矩陣），或卡在 guard 上空轉。兩者
+都不是可接受的預設。
+
+#### Scenario: 跨 repo 節點未安排隔離
+
+- **WHEN** 某跨 repo 節點的啟動未指定容器，且其派工單未把進入容器寫為第一個動作
+- **THEN** 該節點 SHALL 被視為 dispatch 設定錯誤，SHALL NOT 派工
+
+#### Scenario: 目標 repo 的隔離設定較積極
+
+- **WHEN** 目標 repo 的隔離設定比指揮站 repo 更積極
+- **THEN** SHALL NOT 據此推論 worker 會被自動隔離——該設定不改變「背景 session 需顯式進入
+  容器」這個事實
+
+### Requirement: 推翻既有條文的實測校正 SHALL 回填被推翻的位置
+
+本能力的事故簿收錄一則**推翻既有條文**的實測時，該條目 SHALL 載明它推翻了哪一節的哪一句話，
+且被推翻處 SHALL 於同一次修訂中一併改寫。SHALL NOT 只就地追加校正而讓被推翻的原句原封不動
+留在前面幾節。
+
+存在理由是本能力自身的實例：skill §2 曾宣稱「worker 寫不進 mission 目錄免費強制了 plan 只由
+指揮站寫」，而同一份 skill 的 §4 已明文載明穿透路徑存在。**該矛盾不需要任何外部實測就能
+發現**，它之所以存活，是因為 §4 的實測校正是就地追加的——追加者只修了自己那一節，沒有回頭掃
+前面幾節是否建立在被推翻的前提上。一份把「沉默被讀成通過」當核心原則的文件，內部矛盾的存活
+時間 SHALL NOT 取決於下一個讀者恰好同時讀了哪兩節。
+
+#### Scenario: 事故簿收錄一則推翻性實測
+
+- **WHEN** 某次實測顯示 skill 既有的某句話比實際保證強
+- **THEN** 事故簿條目 SHALL 指名該節與該句，且該句 SHALL 於同一次修訂中被改寫，SHALL NOT
+  留待下次
+
+#### Scenario: 校正只影響新增內容
+
+- **WHEN** 某次實測只補充新事實、未推翻任何既有條文
+- **THEN** 回填義務 SHALL NOT 適用——本條約束的是矛盾的存活，不是事故簿的篇幅
+
+### Requirement: 未處置的 worker 容器 SHALL 於合成報告中出聲
+
+mission 的合成報告 SHALL 逐節點列出容器處置狀態，處於 `pending` 或 `unavailable` 的節點 SHALL
+被明確標示為未完成處置。SHALL NOT 只在全部處置完成時才提及容器，亦 SHALL NOT 以「完成訊號皆
+已 fire」推論容器已回收。
+
+存在理由是缺口的第二層：工具路徑只解決「做得到」。在本條之前，漏做收尾**沒有任何訊號**——
+worker session 停掉、`done_signal` fire、合成報告寫完，而一個佔著分支的容器留在目標 repo 裡，
+整條鏈全綠。義務被寫下來了，但沒有東西在數——**無強制機制的義務等同於沒有義務**。
+
+出聲點 SHALL 為合成報告，SHALL NOT 為跨日的持久化稽核。理由是 mission 為一輪對話級、做完即
+棄，跨日追蹤需要持久化 mission 狀態，而那正是本能力已明令排除的方向——要更強的保證 SHALL 先
+正面推翻該條文，SHALL NOT 漸進繞過。
+
+#### Scenario: 有節點的容器仍待處置
+
+- **WHEN** 產出合成報告時，至少一個節點的容器處置狀態為 `pending`
+- **THEN** 報告 SHALL 明確列出該節點與其容器路徑，並標示為未完成處置
+
+#### Scenario: 全部完成訊號皆已 fire 但容器仍在
+
+- **WHEN** 所有節點的 `done_signal` 皆為 `done`，而某節點容器仍存在
+- **THEN** 報告 SHALL NOT 以完成訊號推論容器已回收，SHALL 仍列出該容器為待處置
+
+#### Scenario: 處置狀態無法判定
+
+- **WHEN** 某節點的處置狀態為 `unavailable`
+- **THEN** 報告 SHALL 與 `pending` 分開標示並附原因，SHALL NOT 併入 `pending` 或略過
+
+### Requirement: 跨 repo 節點的收尾 SHALL NOT 對目標 repo 下分支政策判斷
+
+跨 repo 節點的收尾範疇 SHALL 限於**指揮站促成的容器**（worktree 與 session）。收尾產出的步驟
+清單 SHALL NOT 含目標 repo 的分支刪除、merge、或 push 至該 repo 遠端的動作。
+
+理由是目標 repo 有自己的工作流與分支慣例，而指揮站對它們一無所知：依指揮站的分支慣例去判定
+一條外來分支，一律落入未知類別。據此產出的清單不會報錯，只會**對別人的 repo 下一個看起來合理
+的政策判斷**——這比拋出錯誤難發現得多。
+
+worker 分支在目標 repo 內的後續（是否 merge、何時刪除）SHALL 以**事實**呈現（分支是否仍存在、
+是否已併入其 base），SHALL NOT 渲染為本 mission 的待辦步驟。
+
+#### Scenario: 收尾步驟清單的內容邊界
+
+- **WHEN** 為某跨 repo 節點產出收尾步驟清單
+- **THEN** 清單 SHALL 只含容器與 session 的處置動作，SHALL NOT 含針對目標 repo 分支的
+  `branch -D`、merge 或 push 動作
+
+#### Scenario: 目標 repo 的分支尚未 merge
+
+- **WHEN** 收尾時某跨 repo 節點的工作分支仍存在且未併入其 base ref
+- **THEN** 該事實 SHALL 被列為目標 repo 範疇的資訊，SHALL NOT 被列為本 mission 的未完成待辦

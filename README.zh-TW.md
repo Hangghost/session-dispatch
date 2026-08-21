@@ -79,6 +79,38 @@ Subagent 沒有獨立的 worktree，也不會跨 Channel 回報——上述規�
 
 預設形態為 `session`：當欄位漏填時，會套用最嚴格的全套約束，而不是給予豁免。
 
+## 把 worker 派到另一個 repo
+
+worker 的 workspace 可以是**另一個 git repository**——這個 repo 當指揮站，worker 在別的 repo
+裡跑那個 repo 自己的工作流。三件事會不一樣：
+
+- **完成訊號改為逐節點求值**，錨定在 `MissionNode.workspace_repo`，不是一個 mission 共用的
+  cwd。錨錯 repo 的 git 訊號會回非零而被讀成「還在做」——所以 repo 不可達時回 `unavailable`，
+  絕不回 `pending`。
+- **隔離必須顯式安排。** 背景 session **不會**自動隔離，兩個 repo 皆然。要嘛啟動時就指定容器，
+  要嘛把「進入容器」寫成 worker 的第一個動作。
+- **plan 與派工單留在指揮站**，worker 靠顯式的目錄授權讀取。跨 repo 的訊號只能走 commit 形態：
+  對方工作流會挑什麼容器名，你推不準。
+
+`dispatch_plan(node, mission_id)` 會把這些事實算出來——launch 目錄、要授權哪些目錄、派工單
+絕對路徑、容器由誰建立——而且**不開 session、不建任何東西**。
+
+## 收尾：worker 容器的處置
+
+worker 的 worktree 不會因為 session 停掉就被回收。清理會在**兩種**條件下被拒絕：有未 commit
+變更，以及**分支上有從未 push 過的 commit**——後者在 squash 流程下結構上必然發生，因為內容
+早就進了主線，只是那些 SHA 沒被 push 過。
+
+`plan_worker_teardown(node)` 逐節點回報 `disposed` / `pending` / `unavailable` 三態，外加容器
+路徑、dirty 檔案、還坐在裡面的 session，以及排好順序的 `steps`。它是 plan-only——不拆任何東西。
+
+三態的分野是重點：`disposed` 是一句**正面斷言**（「我以可信錨點枚舉過目標 repo，沒有任何容器
+屬於這個節點」）。缺錨點時枚舉會以**完全相同的外觀**落空，所以那種情況回 `unavailable`——回
+`disposed` 就是用「我沒找到」冒充「它不存在」。
+
+`steps` 永遠不含刪分支。分支政策屬於目標 repo 的工作流，而用這個 repo 的慣例去判定一條外來
+分支不會報錯，只會錯。
+
 ## 安裝方式
 
 Skill 的核心指令與邏輯定義在 `SKILL.md`，安裝方式取決於你使用的 Agent 工具：
@@ -95,7 +127,7 @@ Python 底層邏輯零外部套件依賴，完全使用標準函式庫：
 
 ```bash
 pip install -e .          # 或直接將 session_dispatch/ 目錄複製進你的專案中
-pytest                    # 包含 45 個測試案例
+pytest                    # 包含 64 個測試案例
 ```
 
 ## Mission 檔案的存放位置
@@ -130,8 +162,11 @@ pytest                    # 包含 45 個測試案例
 | 檔案 | 內容說明 |
 |---|---|
 | `SKILL.md` | 完整工作流：包含規劃、派工單撰寫、發派機制、星狀拓樸 (Star topology)、降級處理、結果收斂與反合理化對照表 |
-| `SPEC.md` | 15 條規範性條文（SHALL / SHALL NOT），每條均附帶可測試的情境 (Scenarios) |
+| `SPEC.md` | 25 條規範性條文（SHALL / SHALL NOT），每條均附帶可測試的情境 (Scenarios) |
 | `references/brief.template.md` | 派工單模板（標準版本，由單元測試釘住並直接餵給 Linter 驗證） |
+| `references/cross-repo.md` | 把 worker 派到**另一個 repo** 時的完整 playbook |
+| `references/incidents.md` | 每條規約的實測來源——當時發生什麼、為什麼那條擋得住 |
+| `references/decisions.md` | 被正面否決的替代方案與理由 |
 | `examples/mission_plan.example.json` | Mission plan 的 JSON 格式範例 |
 
 `SPEC.md` 是這套工具中最難被複製的核心價值：它把「為什麼不能輕信 Worker 說自己做完了」轉化為可被稽核的具體條文，而不是一段模糊的文字建議。

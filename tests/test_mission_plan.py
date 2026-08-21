@@ -167,12 +167,32 @@ def test_paths_are_derived_from_one_anchor(tmp_path, monkeypatch):
 
 
 def test_worker_output_dir_points_at_worker_worktree(tmp_path, monkeypatch):
-    """產物落 worker 自己的 worktree——mission 目錄 worker 寫不進去。"""
+    """產物落 worker 自己的容器——mission 目錄 worker 未必寫得進去。"""
     monkeypatch.setattr(mp, "main_checkout_root", lambda repo=None: tmp_path)
-    p = mp.worker_output_dir("selfcheck-a")
+    p = mp.worker_output_dir(_node("a", session_name="selfcheck-a"))
 
     assert p == tmp_path / ".claude" / "worktrees" / "selfcheck-a"
     assert "missions" not in str(p)
+
+
+def test_worker_output_dir_refuses_to_guess_cross_repo_container(tmp_path):
+    """跨 repo 節點的容器名指揮站推不準——SHALL 在呼叫點炸，不得回一條猜的路徑。
+
+    回猜測值的失效形態是「永遠 pending」，與「worker 還在做」同形；當場炸至少看得見。
+    """
+    node = _node("a", workspace_repo=str(tmp_path))
+    with pytest.raises(ValueError, match="container_name"):
+        mp.worker_output_dir(node)
+
+
+def test_worker_output_dir_accepts_explicit_cross_repo_container(tmp_path, monkeypatch):
+    """容器名由呼叫方顯式給出時，跨 repo 節點照常推導。"""
+    monkeypatch.setattr(mp, "main_checkout_root", lambda repo=None: tmp_path)
+    node = _node("a", workspace_repo=str(tmp_path))
+
+    assert mp.worker_output_dir(node, "xrepo-smoke") == (
+        tmp_path / ".claude" / "worktrees" / "xrepo-smoke"
+    )
 
 
 def test_main_checkout_root_never_raises_outside_git(tmp_path):
@@ -493,6 +513,219 @@ def test_example_plan_actually_parses(monkeypatch, tmp_path):
     got = mp.read_mission(raw["mission_id"])
 
     assert got is not None, "範例 plan 無法被解析"
-    assert [n.id for n in got.nodes] == ["audit", "fix", "survey", "land"]
+    assert [n.id for n in got.nodes] == ["audit", "fix", "survey", "land", "xrepo"]
     assert got.node("survey").shape == "subagent"
     assert got.node("land").needs_exclusive_checkout is True
+    assert got.node("xrepo").workspace_repo.startswith("/")
+    assert got.node("xrepo").work_branch
+
+
+# --------------------------------------------------------------------------- 跨 repo 節點
+
+
+def test_relative_workspace_repo_raises_at_construction():
+    """相對路徑的基準是 process cwd，而 cwd 會在 session 中途改變——建構期就擋。"""
+    with pytest.raises(ValueError, match="絕對路徑"):
+        _node("a", workspace_repo="../other-repo")
+
+
+def test_missing_workspace_repo_is_unavailable_not_pending(tmp_path):
+    """錨錯 repo 的訊號回非零，會被誤判成「還在做」——SHALL 升級為 unavailable。
+
+    這是本工作流最貴的一種靜默失敗：一個永遠不會 fire 的訊號，長得跟一個仍在工作的
+    worker 一模一樣，於是指揮站永遠等下去。
+    """
+    node = _node("a", workspace_repo=str(tmp_path / "gone"), done_signal="false")
+    out = mp.evaluate_signal(node)
+
+    assert out.state == "unavailable"
+    assert "workspace_repo" in out.detail
+
+
+def test_non_git_workspace_repo_is_unavailable(tmp_path):
+    """路徑存在但不是 git repository，同樣是能力故障不是進度狀態。"""
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    node = _node("a", workspace_repo=str(plain), done_signal="false")
+
+    assert mp.evaluate_signal(node).state == "unavailable"
+
+
+def test_unrunnable_exit_code_is_unavailable(tmp_path):
+    """127（找不到指令）語意無歧義——SHALL NOT 併入「還沒做完」。"""
+    out = mp.evaluate_signal(_node("a", done_signal="no_such_command_xyz"))
+
+    assert out.state == "unavailable"
+
+
+def test_ordinary_nonzero_exit_stays_pending():
+    """退出碼 1 與「檢查為否」同形，SHALL NOT 被升級——那是第三態的反向誤用。"""
+    assert mp.evaluate_signal(_node("a", done_signal="false")).state == "pending"
+
+
+def test_exclusive_checkout_gate_is_per_workspace_repo(tmp_path):
+    """不同 repo 的主 checkout 是獨立資源，其鎖不互相排斥。"""
+    here = _node("a", needs_exclusive_checkout=True)
+    there = _node(
+        "b", needs_exclusive_checkout=True, workspace_repo=str(tmp_path)
+    )
+    ready = mp.ready_nodes(_mission(here, there))
+
+    assert {n.id for n in ready} == {"a", "b"}
+
+
+def test_exclusive_checkout_gate_still_serialises_same_repo():
+    """同一個 repo 內仍至多一個——同時派出兩個是製造互等。"""
+    a = _node("a", needs_exclusive_checkout=True)
+    b = _node("b", needs_exclusive_checkout=True)
+
+    assert len(mp.ready_nodes(_mission(a, b))) == 1
+
+
+# --------------------------------------------------------------------------- dispatch
+
+
+def test_dispatch_plan_keeps_brief_at_station_for_cross_repo(tmp_path, monkeypatch):
+    """派工單恆在指揮站，worker 靠附加目錄授權讀——SHALL NOT 複製進目標 repo。"""
+    monkeypatch.setenv(mp.HOME_ENV_VAR, str(tmp_path / "missions"))
+    target = tmp_path / "other"
+    target.mkdir()
+    plan = mp.dispatch_plan(_node("a", workspace_repo=str(target)), "m1")
+
+    assert plan.cwd == target
+    assert plan.brief_abs == tmp_path / "missions" / "m1" / "a.brief.md"
+    assert plan.add_dirs == (tmp_path / "missions" / "m1",)
+    assert not _is_relative(plan.brief_abs, target)
+
+
+def test_dispatch_plan_cross_repo_defaults_to_worker_owned_container(tmp_path):
+    """未指定容器名的跨 repo 節點：容器由 worker 自建，指揮站 SHALL NOT 推導路徑。"""
+    target = tmp_path / "other"
+    target.mkdir()
+    plan = mp.dispatch_plan(_node("a", workspace_repo=str(target)), "m1")
+
+    assert plan.container_from_worker is True
+    assert plan.container_name == ""
+
+
+def test_dispatch_plan_same_repo_needs_no_extra_grant(tmp_path, monkeypatch):
+    """同 repo 節點不需附加目錄授權——那個授權會擴大 worker 的可及範圍。"""
+    monkeypatch.setattr(mp, "main_checkout_root", lambda repo=None: tmp_path)
+    plan = mp.dispatch_plan(_node("a", session_name="m1-a"), "m1")
+
+    assert plan.add_dirs == ()
+    assert plan.container_name == "m1-a"
+    assert plan.container_from_worker is False
+
+
+def _is_relative(child: Path, parent: Path) -> bool:
+    try:
+        return child.resolve().is_relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
+
+
+# --------------------------------------------------------------------------- 收尾
+
+
+def test_teardown_without_work_branch_is_unavailable_not_disposed():
+    """缺錨點時枚舉全落空，外觀與「已處置」相同——回 disposed 就是用「沒找到」冒充「不存在」。"""
+    plan = mp.plan_worker_teardown(_node("a", work_branch=""))
+
+    assert plan.state == "unavailable"
+    assert plan.is_disposed is False
+    assert "work_branch" in (plan.reason or "")
+
+
+def test_teardown_unreachable_repo_is_unavailable(tmp_path):
+    """目標 repo 不可達時同理——不可達不等於已收乾淨。"""
+    node = _node("a", workspace_repo=str(tmp_path / "gone"), work_branch="wt-a")
+
+    assert mp.plan_worker_teardown(node).state == "unavailable"
+
+
+def test_teardown_disposed_when_branch_holds_no_worktree(tmp_path):
+    """有可信錨點且枚舉無一命中，才是一句能成立的正面斷言。"""
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    node = _node("a", workspace_repo=str(repo), work_branch="never-existed")
+
+    plan = mp.plan_worker_teardown(node)
+    assert plan.state == "disposed"
+    assert plan.worktree_path is None
+
+
+def test_teardown_steps_unlock_before_remove():
+    """實測順序約束：session 停掉後 lock 仍在，少了 unlock 第一個指令就失敗。"""
+    steps = mp._teardown_steps(
+        repo="/r",
+        worktree_path="/r/.claude/worktrees/w",
+        session_name="m1-a",
+        blocked=False,
+        is_main_checkout=False,
+    )
+    unlock = next(i for i, s in enumerate(steps) if "worktree unlock" in s)
+    remove = next(i for i, s in enumerate(steps) if "worktree remove" in s)
+
+    assert unlock < remove
+
+
+def test_teardown_steps_never_delete_branches():
+    """分支去留是目標 repo 的政策，指揮站據自己的慣例判定外來分支只會錯。"""
+    steps = mp._teardown_steps(
+        repo="/r",
+        worktree_path="/r/.claude/worktrees/w",
+        session_name="m1-a",
+        blocked=False,
+        is_main_checkout=False,
+    )
+
+    assert not any("branch -D" in s for s in steps)
+
+
+def test_teardown_steps_skip_removal_while_container_is_held():
+    """仍被佔用的容器不該被建議拆除，但 session 處置照列。"""
+    steps = mp._teardown_steps(
+        repo="/r",
+        worktree_path="/r/.claude/worktrees/w",
+        session_name="m1-a",
+        blocked=True,
+        is_main_checkout=False,
+    )
+
+    assert not any("worktree remove" in s for s in steps)
+    assert any("claude rm" in s for s in steps)
+
+
+def test_teardown_steps_carry_explicit_repo_anchor():
+    """每項都帶 `git -C`：由人執行時，未定位的 git 指令會作用在錯誤的 repo 上。"""
+    steps = mp._teardown_steps(
+        repo="/r",
+        worktree_path="/r/.claude/worktrees/w",
+        session_name="",
+        blocked=False,
+        is_main_checkout=False,
+    )
+
+    assert steps and all(s.startswith("git -C /r ") for s in steps)
+
+
+# --------------------------------------------------------------------------- 隨附範例
+
+
+def test_shipped_example_covers_every_node_shape():
+    """範例 SHALL 涵蓋四種形態，否則新增的欄位沒有任何示範，使用者只能讀 docstring。"""
+    import json
+
+    raw = json.loads((REPO_ROOT / "examples" / "mission_plan.example.json").read_text())
+    nodes = raw["nodes"]
+
+    assert any(n["shape"] == "subagent" for n in nodes), "缺 subagent 節點示範"
+    assert any(n["needs_exclusive_checkout"] for n in nodes), "缺獨佔主 checkout 節點示範"
+    assert any(n.get("workspace_repo") for n in nodes), "缺跨 repo 節點示範"
+    xrepo = next(n for n in nodes if n.get("workspace_repo"))
+    assert xrepo.get("work_branch"), "跨 repo 節點缺 work_branch——收尾時無定位錨點"
+    assert "git log" in xrepo["done_signal"], "跨 repo 節點的訊號 SHALL 為 commit 形態"
